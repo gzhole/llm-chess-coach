@@ -1,0 +1,25 @@
+[Event "casual bullet game"]
+[Site "https://lichess.org/tNOr7Y6M"]
+[Date "2025.07.06"]
+[Round "?"]
+[White "Anonymous"]
+[Black "Anonymous"]
+[Result "0-1"]
+[GameId "tNOr7Y6M"]
+[UTCDate "2025.07.06"]
+[UTCTime "01:04:29"]
+[WhiteElo "?"]
+[BlackElo "?"]
+[Variant "Standard"]
+[TimeControl "120+1"]
+[ECO "D50"]
+[Opening "Queen's Gambit Declined: Modern Variation"]
+[Termination "Normal"]
+[Annotator "lichess.org"]
+
+1. d4 d5 2. c4 e6 3. Nc3 Nf6 4. Bg5
+{ D50 Queen's Gambit Declined: Modern Variation } 4... dxc4 5. e4 c5 6. e5 h6
+7. Bh4 g5 8. Bxg5 hxg5 9. exf6 Qxf6
+{ Qxf6 is a very passive move for Black. It doesn't develop any pieces or create any immediate threats. It simply allows White to occupy the center and potentially launch a kingside attack. cxd4, on the other hand, is a direct and aggressive move that challenges White's control of the center and opens lines for Black's pieces, creating a more active and dynamic position. }
+10. dxc5 Bxc5 11. Bxc4 Qxf2# { Black wins by checkmate. } 0-1
+

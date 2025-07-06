@@ -4,20 +4,20 @@ import os
 import chess
 import chess.pgn
 import sqlite3
+import tempfile
 from unittest.mock import patch, MagicMock
 import pytest
-from coach import analyze_game, STOCKFISH_PATH
+from coach import analyze_game
+from database import Database
 
 # Get the absolute path to the test PGN file
 TESTS_DIR = os.path.dirname(os.path.abspath(__file__))
 TEST_PGN_PATH = os.path.join(TESTS_DIR, 'scholars_mate.pgn')
 
 # We patch the file system checks to make the test independent of the actual Stockfish executable's presence.
-@patch('os.path.exists', return_value=True)
-@patch('os.path.isfile', return_value=True)
 @patch('coach.ollama.chat')
 @patch('coach.Stockfish')
-def test_blunder_triggers_analysis(mock_stockfish_class, mock_ollama_chat, mock_isfile, mock_exists, capsys):
+def test_blunder_triggers_analysis(mock_stockfish_class, mock_ollama_chat, capsys):
     """
     Tests that a clear blunder triggers analysis by mocking both Stockfish and Ollama.
     This makes the test fast, reliable, and independent of external executables.
@@ -57,7 +57,7 @@ def test_blunder_triggers_analysis(mock_stockfish_class, mock_ollama_chat, mock_
     mock_stockfish_class.return_value = mock_stockfish_instance
 
     # 2. ACT
-    analyze_game(TEST_PGN_PATH)
+    analyze_game(MagicMock(), TEST_PGN_PATH)
 
     # 3. ASSERT
     captured = capsys.readouterr()
@@ -81,11 +81,9 @@ BLUNDERS_PGN_PATH = os.path.join(TESTS_DIR, 'blunders_both_sides.pgn')
     ("black", "Black", "White"),
     ("both", "White", None), # When analyzing both, we expect to see White's mistake
 ])
-@patch('os.path.exists', return_value=True)
-@patch('os.path.isfile', return_value=True)
 @patch('coach.ollama.chat')
 @patch('coach.Stockfish')
-def test_side_specific_analysis(mock_stockfish_class, mock_ollama_chat, mock_isfile, mock_exists, capsys, side_to_analyze, expected_mistake_by, not_expected_mistake_by):
+def test_side_specific_analysis(mock_stockfish_class, mock_ollama_chat, capsys, side_to_analyze, expected_mistake_by, not_expected_mistake_by):
     """
     Tests that the analysis is correctly filtered based on the --side argument.
     This test uses a real PGN with blunders from both sides and mocks Stockfish
@@ -129,7 +127,7 @@ def test_side_specific_analysis(mock_stockfish_class, mock_ollama_chat, mock_isf
     mock_stockfish_class.return_value = mock_stockfish_instance
 
     # 2. ACT
-    analyze_game(BLUNDERS_PGN_PATH, side_to_analyze)
+    analyze_game(MagicMock(), BLUNDERS_PGN_PATH, side_to_analyze)
 
     # 3. ASSERT
     captured = capsys.readouterr()
@@ -143,11 +141,9 @@ def test_side_specific_analysis(mock_stockfish_class, mock_ollama_chat, mock_isf
     if side_to_analyze == 'both':
         assert f"*** MISTAKE by Black" in output
 
-@patch('os.path.exists', return_value=True)
-@patch('os.path.isfile', return_value=True)
 @patch('coach.ollama.chat')
 @patch('coach.Stockfish')
-def test_pgn_export_with_comments(mock_stockfish_class, mock_ollama_chat, mock_isfile, mock_exists, capsys):
+def test_pgn_export_with_comments(mock_stockfish_class, mock_ollama_chat, capsys):
     """
     Tests that the annotated PGN is correctly exported with LLM comments.
     """
@@ -182,7 +178,7 @@ def test_pgn_export_with_comments(mock_stockfish_class, mock_ollama_chat, mock_i
 
     # 2. ACT
     try:
-        analyze_game(TEST_PGN_PATH, side_to_analyze='both', output_path=output_pgn_path)
+        analyze_game(MagicMock(), TEST_PGN_PATH, side_to_analyze='both', output_path=output_pgn_path)
 
         # 3. ASSERT
         assert os.path.exists(output_pgn_path)
@@ -216,21 +212,23 @@ def test_pgn_export_with_comments(mock_stockfish_class, mock_ollama_chat, mock_i
             os.remove(output_pgn_path)
 
 
-@patch('os.path.exists', return_value=True)
-@patch('os.path.isfile', return_value=True)
 @patch('coach.ollama.chat')
 @patch('coach.Stockfish')
-def test_blunder_is_saved_to_database(mock_stockfish_class, mock_ollama_chat, mock_isfile, mock_exists, capsys):
+def test_blunder_is_saved_to_database(mock_stockfish_class, mock_ollama_chat, capsys):
     """
     Tests that a detected blunder is correctly saved to the SQLite database.
     """
     # 1. ARRANGE
-    db_path = "chess_coach.db"
-    if os.path.exists(db_path):
-        os.remove(db_path)
+    db_fd, db_path = tempfile.mkstemp(suffix=".db")
+    os.close(db_fd)
 
-    mock_llm_comment = "This is a test comment for the database."
-    mock_ollama_chat.return_value = {'message': {'content': mock_llm_comment}}
+    mock_mistake_tag = "Hanging Piece"
+    mock_explanation = "This is a test explanation for the database."
+    mock_ollama_chat.return_value = {
+        'message': {
+            'content': f'{{"mistake_tag": "{mock_mistake_tag}", "explanation": "{mock_explanation}"}}'
+        }
+    }
 
     mock_stockfish_instance = MagicMock()
 
@@ -256,9 +254,12 @@ def test_blunder_is_saved_to_database(mock_stockfish_class, mock_ollama_chat, mo
     mock_stockfish_instance.get_best_move.return_value = 'g7g6'  # best move
     mock_stockfish_class.return_value = mock_stockfish_instance
 
+    db = Database(db_path=db_path)
+    db.init_db()
+
     try:
         # 2. ACT
-        analyze_game(TEST_PGN_PATH, side_to_analyze='black')
+        analyze_game(db, TEST_PGN_PATH, side_to_analyze='black')
 
         # 3. ASSERT
         assert os.path.exists(db_path), "Database file was not created."
@@ -281,9 +282,76 @@ def test_blunder_is_saved_to_database(mock_stockfish_class, mock_ollama_chat, mo
         # For Black, drop is eval_after - eval_before = 1000 - 50 = 950
         assert saved_blunder['eval_drop'] == 950
         assert saved_blunder['best_move_san'] == "g6"
-        assert saved_blunder['coach_comment'] == mock_llm_comment
+        assert saved_blunder['coach_comment'] == mock_explanation
+        assert saved_blunder['mistake_tag'] == mock_mistake_tag
 
     finally:
         # 4. CLEANUP
-        if os.path.exists(db_path):
-            os.remove(db_path)
+        db.close()
+        os.remove(db_path)
+
+
+@patch('coach.ollama.chat')
+@patch('coach.Stockfish')
+def test_json_parsing_with_markdown_fences(mock_stockfish_class, mock_ollama_chat, capsys):
+    """
+    Tests that the JSON response is correctly parsed even when wrapped
+    in markdown code fences (e.g., ```json ... ```).
+    """
+    # 1. ARRANGE
+    db_fd, db_path = tempfile.mkstemp(suffix=".db")
+    os.close(db_fd)
+
+    mock_mistake_tag = "Missed Tactic"
+    mock_explanation = "This is a test explanation inside a markdown block."
+    # Simulate the LLM wrapping its response in a markdown code block
+    raw_llm_content = f"```json\n{{\n  \"mistake_tag\": \"{mock_mistake_tag}\",\n  \"explanation\": \"{mock_explanation}\"\n}}\n```"
+    mock_ollama_chat.return_value = {'message': {'content': raw_llm_content}}
+
+    mock_stockfish_instance = MagicMock()
+
+    # FEN for the position BEFORE Black's blunder (after 3. Bc4)
+    fen_before_blunder = 'r1bqkbnr/pppp1ppp/2n5/4p2Q/2B1P3/8/PPPP1PPP/RNB1K1NR b KQkq - 3 3'
+    # FEN for the position AFTER Black's blunder (after 3... Nf6??)
+    fen_after_blunder = 'r1bqkb1r/pppp1ppp/2n2n2/4p2Q/2B1P3/8/PPPP1PPP/RNB1K1NR w KQkq - 4 4'
+
+    current_fen = ""
+    def set_fen_side_effect(fen):
+        nonlocal current_fen
+        current_fen = fen
+    mock_stockfish_instance.set_fen_position.side_effect = set_fen_side_effect
+
+    def get_evaluation_side_effect():
+        if current_fen == fen_before_blunder:
+            return {'type': 'cp', 'value': 50}  # before
+        if current_fen == fen_after_blunder:
+            return {'type': 'cp', 'value': 1000} # after (blunder)
+        return {'type': 'cp', 'value': 0}
+
+    mock_stockfish_instance.get_evaluation.side_effect = get_evaluation_side_effect
+    mock_stockfish_instance.get_best_move.return_value = 'g7g6'
+    mock_stockfish_class.return_value = mock_stockfish_instance
+
+    db = Database(db_path=db_path)
+    db.init_db()
+
+    try:
+        # 2. ACT
+        analyze_game(db, TEST_PGN_PATH, side_to_analyze='black')
+
+        # 3. ASSERT
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        cursor.execute("SELECT mistake_tag, coach_comment FROM blunders")
+        blunder = cursor.fetchone()
+        conn.close()
+
+        assert blunder is not None, "No blunder was saved to the database."
+        assert blunder['mistake_tag'] == mock_mistake_tag
+        assert blunder['coach_comment'] == mock_explanation
+
+    finally:
+        # 4. CLEANUP
+        db.close()
+        os.remove(db_path)

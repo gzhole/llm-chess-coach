@@ -2,11 +2,12 @@
 
 import chess
 import chess.pgn
+import json
 import ollama
 from stockfish import Stockfish
 import argparse
 import os
-
+import tempfile
 from database import Database
 
 # --- Configuration ---
@@ -44,7 +45,7 @@ def get_stockfish_evaluation(stockfish: Stockfish, board: chess.Board) -> int:
         return 10000 if eval_result['value'] > 0 else -10000
     return 0
 
-def get_llm_analysis(position_fen: str, player_color: str, mistake: str, best_move: str) -> str:
+def get_llm_analysis(position_fen: str, player_color: str, mistake: str, best_move: str) -> tuple[str, str]:
     """
     Asks the local LLM to analyze a chess mistake.
     
@@ -60,32 +61,58 @@ def get_llm_analysis(position_fen: str, player_color: str, mistake: str, best_mo
     prompt = f"""
     You are a friendly and encouraging chess coach.
     Analyze the following chess position from the perspective of the player who just moved.
-    
+
     Position (FEN): {position_fen}
-    
+
     The player ({player_color}) just played the move {mistake}.
     This was a mistake. The best move was {best_move}.
-    
-    Please explain in simple, clear terms:
+
+    Please provide your analysis in JSON format with two keys: "mistake_tag" and "explanation".
+
+    For "mistake_tag", choose one of the following tactical motifs that best describes the error:
+    - Hanging Piece
+    - Missed Mate
+    - Missed Tactic
+    - Blunder
+    - Inaccuracy
+    - Positional Error
+
+    For "explanation", provide a clear, concise explanation of:
     1. Why was {mistake} a bad move?
     2. What was the idea behind the better move, {best_move}?
-    
-    Keep your explanation concise and focused on the most important concepts. Don't ask questions.
+
+    Keep your explanation focused on the most important concepts. Don't ask questions.
     """
     
     try:
         response = ollama.chat(
             model=OLLAMA_MODEL,
-            messages=[{'role': 'user', 'content': prompt}]
+            messages=[{'role': 'user', 'content': prompt}],
+            options={'temperature': 0.3} # Lower temperature for more deterministic JSON
         )
-        return response['message']['content']
-    except Exception as e:
-        return f"Error getting analysis from Ollama: {e}"
+        content = response['message']['content']
 
-def analyze_game(pgn_path: str, side_to_analyze: str = 'both', output_path: str = None):
-    # Initialize the database and ensure the schema is created
-    db = Database()
-    db.init_db()
+        # Clean the content to extract the JSON object.
+        # LLMs often wrap JSON in markdown code blocks (e.g., ```json ... ```).
+        if '```json' in content:
+            content = content.split('```json')[1].split('```')[0]
+        
+        content = content.strip()
+        
+        # Attempt to parse the JSON response, with a fallback
+        try:
+            analysis_json = json.loads(content)
+            tag = analysis_json.get("mistake_tag", "Uncategorized")
+            explanation = analysis_json.get("explanation", "No explanation provided.")
+            return tag, explanation
+        except (json.JSONDecodeError, KeyError):
+            # If the response is not valid JSON, treat the whole thing as the explanation.
+            return "Uncategorized", content
+
+    except Exception as e:
+        return "Error", f"Error getting analysis from Ollama: {e}"
+
+def analyze_game(db: Database, pgn_path: str, side_to_analyze: str = 'both', output_path: str = None):
     """
     Analyzes a chess game from a PGN file, identifies blunders,
     adds coaching comments, and optionally saves the annotated game.
@@ -163,7 +190,6 @@ def analyze_game(pgn_path: str, side_to_analyze: str = 'both', output_path: str 
             
         # Check for a blunder, but only for the specified side.
         if (side_to_analyze == 'both' or side_to_analyze.lower() == player_color.lower()) and eval_drop > BLUNDER_THRESHOLD:
-            print(f"\n*** MISTAKE by {player_color} on move {move_san}! (Eval drop: {eval_drop:.0f}) ***")
             
             # Pop the move to get the board state *before* the blunder
             board.pop()
@@ -175,17 +201,18 @@ def analyze_game(pgn_path: str, side_to_analyze: str = 'both', output_path: str 
             best_move_san = board.san(chess.Move.from_uci(best_move_uci))
             
             # Get LLM analysis
-            analysis = get_llm_analysis(position_fen, player_color, move_san, best_move_san)
+            mistake_tag, explanation = get_llm_analysis(position_fen, player_color, move_san, best_move_san)
+
+            print(f"\n*** MISTAKE by {player_color} on move {move_san}! (Tag: {mistake_tag}, Eval drop: {eval_drop:.0f}) ***")
             print("\n--- Coach's Corner ---")
-            print(analysis)
+            print(explanation)
             print("----------------------\n")
             
             # Add the analysis as a comment to the game node
-            node.comment = analysis
+            node.comment = explanation
 
             # Save the blunder to the database
-            with Database() as db:
-                db.save_blunder(
+            db.save_blunder(
                     pgn_path=pgn_path,
                     move_number=board.fullmove_number,
                     player_color=player_color,
@@ -193,7 +220,8 @@ def analyze_game(pgn_path: str, side_to_analyze: str = 'both', output_path: str 
                     position_fen=position_fen,
                     eval_drop=int(eval_drop),
                     best_move_san=best_move_san,
-                    coach_comment=analysis
+                    coach_comment=explanation,
+                    mistake_tag=mistake_tag
                 )
             
             # Push the move back on to restore the board state for the next iteration
@@ -212,6 +240,38 @@ def analyze_game(pgn_path: str, side_to_analyze: str = 'both', output_path: str 
             print(f"Error saving PGN file: {e}")
 
 
+def analyze_pgn_string(db: Database, pgn_content: str) -> list:
+    """
+    Analyzes a PGN string by saving it to a temporary file and running the
+    standard analysis pipeline.
+    
+    Args:
+        pgn_content: A string containing the PGN data.
+        
+    Returns:
+        A list of dictionaries, where each dictionary represents a blunder.
+    """
+    # Create a temporary file to store the PGN content
+    # The delete=False flag is important for Windows compatibility, allowing the file to be opened by another process.
+    with tempfile.NamedTemporaryFile(mode='w+', delete=False, suffix='.pgn', encoding='utf-8') as tmp_file:
+        tmp_file.write(pgn_content)
+        tmp_file_path = tmp_file.name
+
+    try:
+        # Run the existing analysis function on the temporary file
+        analyze_game(db, tmp_file_path, side_to_analyze='both', output_path=None)
+
+        # Retrieve the results from the database
+        results = db.get_blunders_by_pgn_path(tmp_file_path)
+        
+        return results
+
+    finally:
+        # Clean up the temporary file
+        if os.path.exists(tmp_file_path):
+            os.remove(tmp_file_path)
+
+
 def main():
     """Main function to run the CLI."""
     parser = argparse.ArgumentParser(description="A simple CLI chess coach that analyzes a PGN file.")
@@ -219,8 +279,11 @@ def main():
     parser.add_argument("--side", type=str, default="both", choices=["white", "black", "both"], help="The side to analyze (white, black, or both). Default is both.")
     parser.add_argument("--output", type=str, default=None, help="The path to save the annotated PGN file.")
     args = parser.parse_args()
-    
-    analyze_game(args.pgn_file, args.side, args.output)
+
+    # Initialize the database and ensure the schema is created
+    with Database() as db:
+        db.init_db()
+        analyze_game(db, args.pgn_file, args.side, args.output)
 
 if __name__ == "__main__":
     main()
