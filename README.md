@@ -116,8 +116,8 @@ Open an issue or start a discussion to pitch features or bug fixes.
 
 ```bash
 # lint & tests
-ruff check .
-pytest
+.\.venv\Scripts\Activate.ps1
+python.exe -m pytest
 ```
 
 ---

@@ -1,0 +1,9 @@
+[Event "A fun game"]
+[Site "Local"]
+[Date "2025.07.05"]
+[Round "1"]
+[White "Player 1"]
+[Black "Player 2"]
+[Result "1-0"]
+
+1. e4 e5 2. Nf3 Nc6 3. Bc4 Bc5 4. O-O Nf6 5. d4 exd4 6. e5 Ng4 7. Bf4 O-O 8. h3 Ngxe5 9. Nxe5 Nxe5 10. Bxe5 Qg5 11. f4 d3+ 12. Kh1 Qg3 13. cxd3 d6 14. Rf3 Qh4 15. Bc3 Bg4 16. Nd2 Bxf3 17. Qxf3 c6 18. Ne4 Bb6 19. Nxd6 Rad8 20. Nf5 1-0
