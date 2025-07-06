@@ -7,6 +7,8 @@ from stockfish import Stockfish
 import argparse
 import os
 
+from database import Database
+
 # --- Configuration ---
 # TODO: Update this path to your Stockfish executable
 # You can download it from https://stockfishchess.org/download/
@@ -81,6 +83,9 @@ def get_llm_analysis(position_fen: str, player_color: str, mistake: str, best_mo
         return f"Error getting analysis from Ollama: {e}"
 
 def analyze_game(pgn_path: str, side_to_analyze: str = 'both', output_path: str = None):
+    # Initialize the database and ensure the schema is created
+    db = Database()
+    db.init_db()
     """
     Analyzes a chess game from a PGN file, identifies blunders,
     adds coaching comments, and optionally saves the annotated game.
@@ -177,6 +182,19 @@ def analyze_game(pgn_path: str, side_to_analyze: str = 'both', output_path: str 
             
             # Add the analysis as a comment to the game node
             node.comment = analysis
+
+            # Save the blunder to the database
+            with Database() as db:
+                db.save_blunder(
+                    pgn_path=pgn_path,
+                    move_number=board.fullmove_number,
+                    player_color=player_color,
+                    move_san=move_san,
+                    position_fen=position_fen,
+                    eval_drop=int(eval_drop),
+                    best_move_san=best_move_san,
+                    coach_comment=analysis
+                )
             
             # Push the move back on to restore the board state for the next iteration
             board.push(move)

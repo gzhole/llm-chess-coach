@@ -3,6 +3,7 @@
 import os
 import chess
 import chess.pgn
+import sqlite3
 from unittest.mock import patch, MagicMock
 import pytest
 from coach import analyze_game, STOCKFISH_PATH
@@ -213,3 +214,76 @@ def test_pgn_export_with_comments(mock_stockfish_class, mock_ollama_chat, mock_i
         # 4. CLEANUP
         if os.path.exists(output_pgn_path):
             os.remove(output_pgn_path)
+
+
+@patch('os.path.exists', return_value=True)
+@patch('os.path.isfile', return_value=True)
+@patch('coach.ollama.chat')
+@patch('coach.Stockfish')
+def test_blunder_is_saved_to_database(mock_stockfish_class, mock_ollama_chat, mock_isfile, mock_exists, capsys):
+    """
+    Tests that a detected blunder is correctly saved to the SQLite database.
+    """
+    # 1. ARRANGE
+    db_path = "chess_coach.db"
+    if os.path.exists(db_path):
+        os.remove(db_path)
+
+    mock_llm_comment = "This is a test comment for the database."
+    mock_ollama_chat.return_value = {'message': {'content': mock_llm_comment}}
+
+    mock_stockfish_instance = MagicMock()
+
+    # FEN for the position BEFORE Black's blunder (after 3. Bc4)
+    fen_before_blunder = 'r1bqkbnr/pppp1ppp/2n5/4p2Q/2B1P3/8/PPPP1PPP/RNB1K1NR b KQkq - 3 3'
+    # FEN for the position AFTER Black's blunder (after 3... Nf6??)
+    fen_after_blunder = 'r1bqkb1r/pppp1ppp/2n2n2/4p2Q/2B1P3/8/PPPP1PPP/RNB1K1NR w KQkq - 4 4'
+
+    current_fen = ""
+    def set_fen_side_effect(fen):
+        nonlocal current_fen
+        current_fen = fen
+    mock_stockfish_instance.set_fen_position.side_effect = set_fen_side_effect
+
+    def get_evaluation_side_effect():
+        if current_fen == fen_before_blunder:
+            return {'type': 'cp', 'value': 50}  # before
+        if current_fen == fen_after_blunder:
+            return {'type': 'cp', 'value': 1000} # after (blunder)
+        return {'type': 'cp', 'value': 0}
+
+    mock_stockfish_instance.get_evaluation.side_effect = get_evaluation_side_effect
+    mock_stockfish_instance.get_best_move.return_value = 'g7g6'  # best move
+    mock_stockfish_class.return_value = mock_stockfish_instance
+
+    try:
+        # 2. ACT
+        analyze_game(TEST_PGN_PATH, side_to_analyze='black')
+
+        # 3. ASSERT
+        assert os.path.exists(db_path), "Database file was not created."
+
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM blunders")
+        blunders = cursor.fetchall()
+        conn.close()
+
+        assert len(blunders) == 1, "Incorrect number of blunders saved to the database."
+        
+        saved_blunder = blunders[0]
+        assert saved_blunder['game_pgn_path'] == TEST_PGN_PATH
+        assert saved_blunder['move_number'] == 3
+        assert saved_blunder['player_color'] == "Black"
+        assert saved_blunder['move_san'] == "Nf6"
+        assert saved_blunder['position_fen'] == fen_before_blunder
+        # For Black, drop is eval_after - eval_before = 1000 - 50 = 950
+        assert saved_blunder['eval_drop'] == 950
+        assert saved_blunder['best_move_san'] == "g6"
+        assert saved_blunder['coach_comment'] == mock_llm_comment
+
+    finally:
+        # 4. CLEANUP
+        if os.path.exists(db_path):
+            os.remove(db_path)
