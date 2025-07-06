@@ -1,0 +1,39 @@
+[Event "casual bullet game"]
+[Site "https://lichess.org/tNOr7Y6M"]
+[Date "2025.07.06"]
+[Round "?"]
+[White "Anonymous"]
+[Black "Anonymous"]
+[Result "0-1"]
+[GameId "tNOr7Y6M"]
+[UTCDate "2025.07.06"]
+[UTCTime "01:04:29"]
+[WhiteElo "?"]
+[BlackElo "?"]
+[Variant "Standard"]
+[TimeControl "120+1"]
+[ECO "D50"]
+[Opening "Queen's Gambit Declined: Modern Variation"]
+[Termination "Normal"]
+[Annotator "lichess.org"]
+
+1. d4 d5 2. c4 e6 3. Nc3 Nf6 4. Bg5
+{ D50 Queen's Gambit Declined: Modern Variation } 4... dxc4 5. e4 c5 6. e5 h6
+7. Bh4 g5 8. Bxg5 hxg5 9. exf6 Qxf6
+{ Okay, let’s take a look at this position.
+
+Alright, it’s totally understandable you feel a bit frustrated. You’re right, **Qf6 was a mistake.** It’s a very passive move for Black, and it opens up significant weaknesses in your position.
+
+**1. Why was Qd6 a bad move?**
+
+Basically, it leaves your king exposed.  After Qd6, Black's king is vulnerable to attacks, and your d-pawn has no support. It’s a simple, but devastatingly bad, move.
+
+**2. What was the idea behind cxd4?**
+
+Cxd4 is a brilliant move! It creates a strong, open diagonal for your knight, and it forces White to react defensively. It takes control of the center and establishes a good fighting position for you. It's a cornerstone of Black's opening strategy.
+
+---
+
+Do you want to dive deeper into any of these aspects, or would you like me to explain a different part of the game? }
+10. dxc5 Bxc5 11. Bxc4 Qxf2# { Black wins by checkmate. } 0-1
+

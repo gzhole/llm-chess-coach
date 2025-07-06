@@ -122,6 +122,9 @@ python coach.py games/sample_game.pgn --side white
 
 # Analyze only Black's moves
 python coach.py games/sample_game.pgn --side black
+
+# Analyze a game and save the annotated PGN to a new file
+python coach.py games/sample_game.pgn --output games/annotated_game.pgn
 ```
 
 ---

@@ -68,7 +68,7 @@ def get_llm_analysis(position_fen: str, player_color: str, mistake: str, best_mo
     1. Why was {mistake} a bad move?
     2. What was the idea behind the better move, {best_move}?
     
-    Keep your explanation concise and focused on the most important concepts.
+    Keep your explanation concise and focused on the most important concepts. Don't ask questions.
     """
     
     try:
@@ -80,13 +80,15 @@ def get_llm_analysis(position_fen: str, player_color: str, mistake: str, best_mo
     except Exception as e:
         return f"Error getting analysis from Ollama: {e}"
 
-def analyze_game(pgn_path: str, side_to_analyze: str = 'both'):
+def analyze_game(pgn_path: str, side_to_analyze: str = 'both', output_path: str = None):
     """
     Analyzes a chess game from a PGN file, identifies blunders,
-    and uses an LLM to provide coaching advice.
+    adds coaching comments, and optionally saves the annotated game.
     
     Args:
         pgn_path: The file path to the PGN game.
+        side_to_analyze: The side to analyze ('white', 'black', or 'both').
+        output_path: Optional path to save the annotated PGN file.
     """
     if not os.path.exists(STOCKFISH_PATH) or not os.path.isfile(STOCKFISH_PATH):
         print(f"Error: Stockfish executable not found at '{STOCKFISH_PATH}'")
@@ -114,35 +116,39 @@ def analyze_game(pgn_path: str, side_to_analyze: str = 'both'):
     print(f"Analyzing game: {game.headers.get('White', '?')} vs. {game.headers.get('Black', '?')}")
     print("-" * 40)
     
-    for i, move in enumerate(game.mainline_moves()):
-        move_number = (i // 2) + 1
+    # We iterate through the game's nodes to be able to add comments.
+    for node in game.mainline():
+        # Skip the root node which has no move
+        if not node.parent:
+            continue
+            
+        move = node.move
+        
+        # The board is at the state *before* this move.
+        # We need to determine the player color *before* pushing the move.
         player_color = "White" if board.turn == chess.WHITE else "Black"
         
-        # Get the evaluation BEFORE the move. Stockfish is always from White's perspective.
-        stockfish.set_fen_position(board.fen())
+        # Get the evaluation BEFORE the move.
         eval_before_white_pov = get_stockfish_evaluation(stockfish, board)
         
-        # Make the move and get the move in Standard Algebraic Notation (SAN)
+        # Get the move in Standard Algebraic Notation (SAN) for printing
         move_san = board.san(move)
+        
+        # Make the move to get to the state of the current node
         board.push(move)
 
-        # Get the evaluation AFTER the move. Stockfish is always from White's perspective.
-        stockfish.set_fen_position(board.fen())
+        # Get the evaluation AFTER the move.
         eval_after_white_pov = get_stockfish_evaluation(stockfish, board)
 
         # Calculate the evaluation drop from the current player's perspective.
         if player_color == "White":
-            # For White, a drop is (score before) - (score after).
             eval_drop = eval_before_white_pov - eval_after_white_pov
         else: # Black
-            # For Black, a drop is also (score before) - (score after).
-            # Black's score is the negative of White's.
-            # Drop = (-eval_before_white_pov) - (-eval_after_white_pov)
             eval_drop = eval_after_white_pov - eval_before_white_pov
         
         # Print the move
         if player_color == "White":
-            print(f"{move_number}. {move_san}", end=" ")
+            print(f"{board.fullmove_number}. {move_san}", end=" ")
         else:
             print(f"{move_san}")
 
@@ -150,12 +156,11 @@ def analyze_game(pgn_path: str, side_to_analyze: str = 'both'):
         if board.is_game_over():
             continue
             
-        # Check for a blunder
         # Check for a blunder, but only for the specified side.
         if (side_to_analyze == 'both' or side_to_analyze.lower() == player_color.lower()) and eval_drop > BLUNDER_THRESHOLD:
             print(f"\n*** MISTAKE by {player_color} on move {move_san}! (Eval drop: {eval_drop:.0f}) ***")
             
-            # We need the FEN *before* the bad move was made.
+            # Pop the move to get the board state *before* the blunder
             board.pop()
             position_fen = board.fen()
             
@@ -170,10 +175,23 @@ def analyze_game(pgn_path: str, side_to_analyze: str = 'both'):
             print(analysis)
             print("----------------------\n")
             
-            # Push the move back on to continue the game
+            # Add the analysis as a comment to the game node
+            node.comment = analysis
+            
+            # Push the move back on to restore the board state for the next iteration
             board.push(move)
 
     print("\nAnalysis complete.")
+
+    # Export the annotated PGN if an output path is provided
+    if output_path:
+        try:
+            with open(output_path, "w", encoding="utf-8") as f:
+                exporter = chess.pgn.FileExporter(f)
+                game.accept(exporter)
+            print(f"\nAnnotated game saved to {output_path}")
+        except IOError as e:
+            print(f"Error saving PGN file: {e}")
 
 
 def main():
@@ -181,9 +199,10 @@ def main():
     parser = argparse.ArgumentParser(description="A simple CLI chess coach that analyzes a PGN file.")
     parser.add_argument("pgn_file", help="The path to the PGN file to analyze.")
     parser.add_argument("--side", type=str, default="both", choices=["white", "black", "both"], help="The side to analyze (white, black, or both). Default is both.")
+    parser.add_argument("--output", type=str, default=None, help="The path to save the annotated PGN file.")
     args = parser.parse_args()
     
-    analyze_game(args.pgn_file, args.side)
+    analyze_game(args.pgn_file, args.side, args.output)
 
 if __name__ == "__main__":
     main()

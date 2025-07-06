@@ -1,8 +1,10 @@
 # tests/test_coach.py
 
-import pytest
-from unittest.mock import patch, MagicMock
 import os
+import chess
+import chess.pgn
+from unittest.mock import patch, MagicMock
+import pytest
 from coach import analyze_game, STOCKFISH_PATH
 
 # Get the absolute path to the test PGN file
@@ -139,3 +141,75 @@ def test_side_specific_analysis(mock_stockfish_class, mock_ollama_chat, mock_isf
     # A special check for the 'both' case to ensure Black's mistake is also caught
     if side_to_analyze == 'both':
         assert f"*** MISTAKE by Black" in output
+
+@patch('os.path.exists', return_value=True)
+@patch('os.path.isfile', return_value=True)
+@patch('coach.ollama.chat')
+@patch('coach.Stockfish')
+def test_pgn_export_with_comments(mock_stockfish_class, mock_ollama_chat, mock_isfile, mock_exists, capsys):
+    """
+    Tests that the annotated PGN is correctly exported with LLM comments.
+    """
+    # 1. ARRANGE
+    output_pgn_path = os.path.join(TESTS_DIR, "annotated_game.pgn")
+    mock_llm_comment = "This is a test comment from the mock LLM."
+    mock_ollama_chat.return_value = {'message': {'content': mock_llm_comment}}
+
+    mock_stockfish_instance = MagicMock()
+
+    # FEN for the position BEFORE Black's blunder (after 3. Bc4)
+    fen_before_blunder = 'r1bqkbnr/pppp1ppp/2n5/4p2Q/2B1P3/8/PPPP1PPP/RNB1K1NR b KQkq - 3 3'
+    # FEN for the position AFTER Black's blunder (after 3... Nf6??)
+    fen_after_blunder = 'r1bqkb1r/pppp1ppp/2n2n2/4p2Q/2B1P3/8/PPPP1PPP/RNB1K1NR w KQkq - 4 4'
+
+    current_fen = ""
+    def set_fen_side_effect(fen):
+        nonlocal current_fen
+        current_fen = fen
+    mock_stockfish_instance.set_fen_position.side_effect = set_fen_side_effect
+
+    def get_evaluation_side_effect():
+        if current_fen == fen_before_blunder:
+            return {'type': 'cp', 'value': 50}
+        if current_fen == fen_after_blunder:
+            return {'type': 'cp', 'value': 1000} # Blunder!
+        return {'type': 'cp', 'value': 0}
+
+    mock_stockfish_instance.get_evaluation.side_effect = get_evaluation_side_effect
+    mock_stockfish_instance.get_best_move.return_value = 'g7g6'
+    mock_stockfish_class.return_value = mock_stockfish_instance
+
+    # 2. ACT
+    try:
+        analyze_game(TEST_PGN_PATH, side_to_analyze='both', output_path=output_pgn_path)
+
+        # 3. ASSERT
+        assert os.path.exists(output_pgn_path)
+
+        with open(output_pgn_path, 'r') as f:
+            # Re-parse the exported game to check its content programmatically
+            exported_game = chess.pgn.read_game(f)
+        
+        assert exported_game is not None, "Could not parse the exported PGN file."
+
+        # Traverse the game to find the move and check for the comment
+        node = exported_game
+        found_comment = False
+        # The blunder is on move 3... Nf6
+        blunder_move_uci = 'g8f6'
+        
+        while node.variations:
+            next_node = node.variations[0]
+            # Check if the node corresponds to the blunder move
+            if node.board().turn == chess.BLACK and node.board().fullmove_number == 3 and next_node.move.uci() == blunder_move_uci:
+                assert next_node.comment == mock_llm_comment
+                found_comment = True
+                break
+            node = next_node
+        
+        assert found_comment, f"Comment for the blunder move {blunder_move_uci} was not found."
+
+    finally:
+        # 4. CLEANUP
+        if os.path.exists(output_pgn_path):
+            os.remove(output_pgn_path)
