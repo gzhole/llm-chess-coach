@@ -154,7 +154,7 @@ To run the test suite:
 ```bash
 # lint & tests
 .\.venv\Scripts\Activate.ps1
-python.exe -m pytest
+python -m pytest
 ```
 
 ---

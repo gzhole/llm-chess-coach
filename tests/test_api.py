@@ -55,11 +55,12 @@ def test_analyze_pgn_file_api(mock_stockfish_class, mock_ollama_chat, client):
     """
     # 1. ARRANGE
     # Mock the LLM response
-    mock_mistake_tag = "Hanging Piece"
+    mock_motif = "Hanging Piece"
+    mock_severity = "Blunder"
     mock_explanation = "This is a mock explanation from the API test."
     mock_ollama_chat.return_value = {
         'message': {
-            'content': f'{{"mistake_tag": "{mock_mistake_tag}", "explanation": "{mock_explanation}"}}'
+            'content': f'{{"motif": "{mock_motif}", "severity": "{mock_severity}", "explanation": "{mock_explanation}"}}'
         }
     }
 
@@ -110,9 +111,10 @@ def test_analyze_pgn_file_api(mock_stockfish_class, mock_ollama_chat, client):
     analysis_results = response_data["analysis"]
     assert len(analysis_results) == 1, "API did not return the expected number of blunders."
 
-    blunder = analysis_results[0]
-    assert blunder['move_san'] == "Ngxe5"
-    assert blunder['player_color'] == "Black"
-    assert blunder['mistake_tag'] == mock_mistake_tag
-    assert blunder['coach_comment'] == mock_explanation
-    assert blunder['eval_drop'] == 550  # 600 - 50 = 550
+    first_blunder = analysis_results[0]
+    assert first_blunder['player_color'] == "Black"
+    assert first_blunder['move_san'] == "Ngxe5"
+    assert first_blunder['motif'] == mock_motif
+    assert first_blunder['severity'] == mock_severity
+    assert first_blunder['coach_comment'] == mock_explanation
+    assert first_blunder['eval_drop'] == 550  # 600 - 50 = 550

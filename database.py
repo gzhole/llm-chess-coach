@@ -57,7 +57,8 @@ class Database:
                 eval_drop INTEGER NOT NULL,
                 best_move_san TEXT NOT NULL,
                 coach_comment TEXT,
-                mistake_tag TEXT,
+                motif TEXT,
+                severity TEXT,
                 analysis_timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
             );
             """)
@@ -65,7 +66,7 @@ class Database:
         except sqlite3.Error as e:
             print(f"Error initializing database: {e}")
 
-    def save_blunder(self, pgn_path, move_number, player_color, move_san, position_fen, eval_drop, best_move_san, coach_comment, mistake_tag):
+    def save_blunder(self, pgn_path, move_number, player_color, move_san, position_fen, eval_drop, best_move_san, coach_comment, motif, severity):
         """
         Saves a detected blunder to the database.
         """
@@ -75,9 +76,9 @@ class Database:
         try:
             cursor = self.conn.cursor()
             cursor.execute("""
-            INSERT INTO blunders (game_pgn_path, move_number, player_color, move_san, position_fen, eval_drop, best_move_san, coach_comment, mistake_tag)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (pgn_path, move_number, player_color, move_san, position_fen, eval_drop, best_move_san, coach_comment, mistake_tag))
+            INSERT INTO blunders (game_pgn_path, move_number, player_color, move_san, position_fen, eval_drop, best_move_san, coach_comment, motif, severity)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (pgn_path, move_number, player_color, move_san, position_fen, eval_drop, best_move_san, coach_comment, motif, severity))
             self.conn.commit()
         except sqlite3.Error as e:
             print(f"Error saving blunder to database: {e}")

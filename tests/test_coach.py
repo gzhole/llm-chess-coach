@@ -26,7 +26,7 @@ def test_blunder_triggers_analysis(mock_stockfish_class, mock_ollama_chat, capsy
 
     # --- Mock Ollama --- 
     mock_ollama_chat.return_value = {
-        'message': {'content': 'This is a mock analysis from the LLM.'}
+        'message': {'content': '{"motif": "Test Motif", "severity": "Test Severity", "explanation": "This is a mock analysis from the LLM."}'}
     }
 
     # --- Mock Stockfish ---
@@ -44,13 +44,10 @@ def test_blunder_triggers_analysis(mock_stockfish_class, mock_ollama_chat, capsy
     fen_after_blunder = 'r1bqkb1r/pppp1ppp/2n2n2/4p2Q/2B1P3/8/PPPP1PPP/RNB1K1NR w KQkq - 4 4'
 
     def get_evaluation_side_effect():
-        if current_fen == fen_before_blunder:
-            return {'type': 'cp', 'value': 50}
-        
         if current_fen == fen_after_blunder:
             return {'type': 'cp', 'value': 1000} # Large advantage for White
-            
-        return {'type': 'cp', 'value': 0}
+        # For any other position, return a stable evaluation
+        return {'type': 'cp', 'value': 50}
 
     mock_stockfish_instance.get_evaluation.side_effect = get_evaluation_side_effect
     mock_stockfish_instance.get_best_move.return_value = 'g7g6' # UCI for g6
@@ -66,12 +63,19 @@ def test_blunder_triggers_analysis(mock_stockfish_class, mock_ollama_chat, capsy
     assert "*** MISTAKE by Black" in output
     assert "--- Coach's Corner ---" in output
     mock_ollama_chat.assert_called_once()
-
     call_args, call_kwargs = mock_ollama_chat.call_args
-    prompt = call_kwargs['messages'][0]['content']
-    assert f'Position (FEN): {fen_before_blunder}' in prompt
-    assert 'player (Black) just played the move Nf6' in prompt
-    assert 'best move was g6' in prompt
+
+    # The system prompt is the first message, user prompt is the second.
+    system_prompt = call_kwargs['messages'][0]['content']
+    user_prompt = call_kwargs['messages'][1]['content']
+
+    # Assert that the system prompt is correct
+    assert "You are ChessTacticTagger v1.1." in system_prompt
+
+    # Assert that the user prompt contains the key information about the blunder
+    assert f'- FEN Before Move: {fen_before_blunder}' in user_prompt
+    assert "- Player's Move: Nf6" in user_prompt
+    assert "- Engine's Best Move: g6" in user_prompt
 
 # Get the absolute path to the new test PGN file
 BLUNDERS_PGN_PATH = os.path.join(TESTS_DIR, 'blunders_both_sides.pgn')
@@ -90,7 +94,7 @@ def test_side_specific_analysis(mock_stockfish_class, mock_ollama_chat, capsys, 
     evaluation based on FEN strings to ensure reliable testing.
     """
     # 1. ARRANGE
-    mock_ollama_chat.return_value = {'message': {'content': 'Mock LLM analysis.'}}
+    mock_ollama_chat.return_value = {'message': {'content': '{"motif": "Mock", "severity": "Mock", "explanation": "Mock LLM analysis."}'}}
     mock_stockfish_instance = MagicMock()
 
     # Add a side effect to capture the FEN for the mock evaluation
@@ -149,8 +153,11 @@ def test_pgn_export_with_comments(mock_stockfish_class, mock_ollama_chat, capsys
     """
     # 1. ARRANGE
     output_pgn_path = os.path.join(TESTS_DIR, "annotated_game.pgn")
-    mock_llm_comment = "This is a test comment from the mock LLM."
-    mock_ollama_chat.return_value = {'message': {'content': mock_llm_comment}}
+    mock_severity = "Blunder"
+    mock_motif = "Hanging Piece"
+    mock_explanation = "This is a test comment from the mock LLM."
+    mock_llm_json_content = f'{{"severity": "{mock_severity}", "motif": "{mock_motif}", "explanation": "{mock_explanation}"}}'
+    mock_ollama_chat.return_value = {'message': {'content': mock_llm_json_content}}
 
     mock_stockfish_instance = MagicMock()
 
@@ -199,7 +206,8 @@ def test_pgn_export_with_comments(mock_stockfish_class, mock_ollama_chat, capsys
             next_node = node.variations[0]
             # Check if the node corresponds to the blunder move
             if node.board().turn == chess.BLACK and node.board().fullmove_number == 3 and next_node.move.uci() == blunder_move_uci:
-                assert next_node.comment == mock_llm_comment
+                expected_comment = f"[COACH] {mock_severity} ({mock_motif}): {mock_explanation}"
+                assert next_node.comment == expected_comment
                 found_comment = True
                 break
             node = next_node
@@ -222,11 +230,12 @@ def test_blunder_is_saved_to_database(mock_stockfish_class, mock_ollama_chat, ca
     db_fd, db_path = tempfile.mkstemp(suffix=".db")
     os.close(db_fd)
 
-    mock_mistake_tag = "Hanging Piece"
+    mock_motif = "Hanging Piece"
+    mock_severity = "Blunder"
     mock_explanation = "This is a test explanation for the database."
     mock_ollama_chat.return_value = {
         'message': {
-            'content': f'{{"mistake_tag": "{mock_mistake_tag}", "explanation": "{mock_explanation}"}}'
+            'content': f'{{"motif": "{mock_motif}", "severity": "{mock_severity}", "explanation": "{mock_explanation}"}}'
         }
     }
 
@@ -251,7 +260,7 @@ def test_blunder_is_saved_to_database(mock_stockfish_class, mock_ollama_chat, ca
         return {'type': 'cp', 'value': 0}
 
     mock_stockfish_instance.get_evaluation.side_effect = get_evaluation_side_effect
-    mock_stockfish_instance.get_best_move.return_value = 'g7g6'  # best move
+    mock_stockfish_instance.get_best_move.return_value = 'g7g6'  # Black's best move (g6 in SAN)
     mock_stockfish_class.return_value = mock_stockfish_instance
 
     db = Database(db_path=db_path)
@@ -283,10 +292,13 @@ def test_blunder_is_saved_to_database(mock_stockfish_class, mock_ollama_chat, ca
         assert saved_blunder['eval_drop'] == 950
         assert saved_blunder['best_move_san'] == "g6"
         assert saved_blunder['coach_comment'] == mock_explanation
-        assert saved_blunder['mistake_tag'] == mock_mistake_tag
+        assert saved_blunder['motif'] == mock_motif
+        assert saved_blunder['severity'] == mock_severity
 
     finally:
         # 4. CLEANUP
+        if 'conn' in locals() and conn:
+            conn.close()
         db.close()
         os.remove(db_path)
 
@@ -302,10 +314,11 @@ def test_json_parsing_with_markdown_fences(mock_stockfish_class, mock_ollama_cha
     db_fd, db_path = tempfile.mkstemp(suffix=".db")
     os.close(db_fd)
 
-    mock_mistake_tag = "Missed Tactic"
+    mock_motif = "Missed Tactic"
+    mock_severity = "Inaccuracy"
     mock_explanation = "This is a test explanation inside a markdown block."
     # Simulate the LLM wrapping its response in a markdown code block
-    raw_llm_content = f"```json\n{{\n  \"mistake_tag\": \"{mock_mistake_tag}\",\n  \"explanation\": \"{mock_explanation}\"\n}}\n```"
+    raw_llm_content = f"```json\n{{\n  \"motif\": \"{mock_motif}\",\n  \"severity\": \"{mock_severity}\",\n  \"explanation\": \"{mock_explanation}\"\n}}\n```"
     mock_ollama_chat.return_value = {'message': {'content': raw_llm_content}}
 
     mock_stockfish_instance = MagicMock()
@@ -343,15 +356,18 @@ def test_json_parsing_with_markdown_fences(mock_stockfish_class, mock_ollama_cha
         conn = sqlite3.connect(db_path)
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
-        cursor.execute("SELECT mistake_tag, coach_comment FROM blunders")
+        cursor.execute("SELECT motif, severity, coach_comment FROM blunders")
         blunder = cursor.fetchone()
         conn.close()
 
         assert blunder is not None, "No blunder was saved to the database."
-        assert blunder['mistake_tag'] == mock_mistake_tag
+        assert blunder['motif'] == mock_motif
+        assert blunder['severity'] == mock_severity
         assert blunder['coach_comment'] == mock_explanation
 
     finally:
         # 4. CLEANUP
+        if 'conn' in locals() and conn:
+            conn.close()
         db.close()
         os.remove(db_path)

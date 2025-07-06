@@ -22,7 +22,7 @@ BLUNDER_THRESHOLD = 150
 # OLLAMA_MODEL = 'llama3.2:1b'
 OLLAMA_MODEL = 'gemma3:1b'
 
-def get_stockfish_evaluation(stockfish: Stockfish, board: chess.Board) -> int:
+def get_stockfish_evaluation(stockfish: Stockfish, board: chess.Board) -> dict:
     """
     Gets the Stockfish evaluation for a given board position.
     
@@ -31,86 +31,107 @@ def get_stockfish_evaluation(stockfish: Stockfish, board: chess.Board) -> int:
         board: A chess.Board object representing the position.
         
     Returns:
-        The evaluation in centipawns. Positive is good for white, negative for black.
+        The evaluation dictionary, e.g., {'type': 'cp', 'value': 21}.
     """
     stockfish.set_fen_position(board.fen())
-    eval_result = stockfish.get_evaluation()
-    
-    # The evaluation result is a dictionary, e.g., {'type': 'cp', 'value': 21}
-    # We handle cases where there might be a mate score.
-    if eval_result['type'] == 'cp':
-        return eval_result['value']
-    elif eval_result['type'] == 'mate':
-        # Assign a very high score for mate to ensure it's treated as decisive
-        return 10000 if eval_result['value'] > 0 else -10000
+    return stockfish.get_evaluation()
+
+def get_centipawns(evaluation):
+    """
+    Converts a Stockfish evaluation dictionary to a centipawn value from White's perspective.
+    A positive value is good for White, a negative value is good for Black.
+    Handles both 'cp' (centipawns) and 'mate' scores.
+    """
+    if evaluation['type'] == 'cp':
+        return evaluation['value']
+    elif evaluation['type'] == 'mate':
+        # A mate score is converted to a large centipawn value.
+        # The sign indicates who is winning.
+        mate_score = 30000
+        if evaluation['value'] < 0:
+            return -mate_score
+        return mate_score
     return 0
 
-def get_llm_analysis(position_fen: str, player_color: str, mistake: str, best_move: str) -> tuple[str, str]:
+def get_llm_analysis(position_fen: str, move_san: str, best_move_san: str, cp_loss: int, mate_missed: bool) -> tuple[str, str, str]:
     """
-    Asks the local LLM to analyze a chess mistake.
-    
+    Asks the local LLM to analyze a chess mistake and classify it.
+
     Args:
         position_fen: The FEN string of the board position where the mistake occurred.
-        player_color: The color of the player who made the mistake ('White' or 'Black').
-        mistake: The move that was played (e.g., 'e4e5').
-        best_move: The move Stockfish suggested as best.
-        
+        move_san: The move that was played (e.g., 'Nxf7?').
+        best_move_san: The move Stockfish suggested as best (e.g., 'Qh5!').
+        cp_loss: The centipawn loss from the mistake.
+        mate_missed: A boolean indicating if a forced mate was missed.
+
     Returns:
-        A string containing the LLM's analysis.
+        A tuple containing: (motif, severity, explanation).
     """
-    prompt = f"""
-    You are a friendly and encouraging chess coach.
-    Analyze the following chess position from the perspective of the player who just moved.
+    system_prompt = """
+    You are ChessTacticTagger v1.1. Your task is to analyze a single chess move and provide a detailed analysis in a strict JSON format.
 
-    Position (FEN): {position_fen}
+    ──────────────────── YOUR TASK ────────────────────
+    Based on the context provided, provide a JSON response with three keys: "motif", "severity", and "explanation".
 
-    The player ({player_color}) just played the move {mistake}.
-    This was a mistake. The best move was {best_move}.
+    1.  **motif**: Choose the ONE tactical theme from the list below that best explains why the move is a mistake.
+        -   Options: `Pin`, `Skewer`, `Fork`, `DiscoveredAttack`, `XRay`, `Zwischenzug`, `Overloading`, `Clearance`, `Interference`, `HangingPiece`, `Deflection`, `BackRankWeakness`, `Reloader`, `None`
 
-    Please provide your analysis in JSON format with two keys: "mistake_tag" and "explanation".
+    2.  **severity**: Classify the costliness of the move based on the centipawn loss and if a mate was missed.
+        -   Options: `Inaccuracy` (50-99cp), `PositionalError` (100-199cp), `MissedTactic` (200-299cp), `Blunder` (300+ cp), `MissedMate`
 
-    For "mistake_tag", choose one of the following tactical motifs that best describes the error:
-    - Hanging Piece
-    - Missed Mate
-    - Missed Tactic
-    - Blunder
-    - Inaccuracy
-    - Positional Error
+    3.  **explanation**: Provide a clear, concise explanation for a human player. Describe why the player's move was weak and what made the engine's suggested move so much better. Focus on the most critical tactical or strategic ideas. Do not ask questions.
 
-    For "explanation", provide a clear, concise explanation of:
-    1. Why was {mistake} a bad move?
-    2. What was the idea behind the better move, {best_move}?
+    ──────────────────── RESPONSE FORMAT ────────────────────
+    Respond with STRICT JSON only. Do not include any introductory text, code fences, or extra keys.
 
-    Keep your explanation focused on the most important concepts. Don't ask questions.
+    Example:
+    {
+      "motif": "HangingPiece",
+      "severity": "Blunder",
+      "explanation": "Your move left your knight undefended, allowing it to be captured for free. The engine's suggestion initiates a powerful attack on the king, forcing a win."
+    }
     """
-    
+
+    user_prompt = f"""
+    ──────────────────── ANALYSIS CONTEXT ────────────────────
+    - FEN Before Move: {position_fen}
+    - Player's Move: {move_san}
+    - Engine's Best Move: {best_move_san}
+    - Centipawn Loss: {cp_loss}
+    - Was a forced mate missed? {'Yes' if mate_missed else 'No'}
+    """
+
+    messages = [
+        {'role': 'system', 'content': system_prompt},
+        {'role': 'user', 'content': user_prompt}
+    ]
+
     try:
         response = ollama.chat(
             model=OLLAMA_MODEL,
-            messages=[{'role': 'user', 'content': prompt}],
-            options={'temperature': 0.3} # Lower temperature for more deterministic JSON
+            messages=messages,
+            options={'temperature': 0.2, 'timeout': 60}  # Lower temperature and add a 60s timeout
         )
         content = response['message']['content']
 
         # Clean the content to extract the JSON object.
-        # LLMs often wrap JSON in markdown code blocks (e.g., ```json ... ```).
         if '```json' in content:
             content = content.split('```json')[1].split('```')[0]
-        
         content = content.strip()
-        
+
         # Attempt to parse the JSON response, with a fallback
         try:
             analysis_json = json.loads(content)
-            tag = analysis_json.get("mistake_tag", "Uncategorized")
+            motif = analysis_json.get("motif", "Uncategorized")
+            severity = analysis_json.get("severity", "Unknown")
             explanation = analysis_json.get("explanation", "No explanation provided.")
-            return tag, explanation
+            return motif, severity, explanation
         except (json.JSONDecodeError, KeyError):
-            # If the response is not valid JSON, treat the whole thing as the explanation.
-            return "Uncategorized", content
+            # If parsing fails, return the raw content as the explanation.
+            return "Uncategorized", "Error", content
 
     except Exception as e:
-        return "Error", f"Error getting analysis from Ollama: {e}"
+        return "Error", "Error", f"Error getting analysis from Ollama: {e}"
 
 def analyze_game(db: Database, pgn_path: str, side_to_analyze: str = 'both', output_path: str = None):
     """
@@ -157,11 +178,12 @@ def analyze_game(db: Database, pgn_path: str, side_to_analyze: str = 'both', out
         move = node.move
         
         # The board is at the state *before* this move.
-        # We need to determine the player color *before* pushing the move.
         player_color = "White" if board.turn == chess.WHITE else "Black"
+        move_number = board.fullmove_number
         
         # Get the evaluation BEFORE the move.
-        eval_before_white_pov = get_stockfish_evaluation(stockfish, board)
+        eval_before_dict = get_stockfish_evaluation(stockfish, board)
+        eval_before = get_centipawns(eval_before_dict)
         
         # Get the move in Standard Algebraic Notation (SAN) for printing
         move_san = board.san(move)
@@ -170,13 +192,14 @@ def analyze_game(db: Database, pgn_path: str, side_to_analyze: str = 'both', out
         board.push(move)
 
         # Get the evaluation AFTER the move.
-        eval_after_white_pov = get_stockfish_evaluation(stockfish, board)
+        eval_after_dict = get_stockfish_evaluation(stockfish, board)
+        eval_after = get_centipawns(eval_after_dict)
 
-        # Calculate the evaluation drop from the current player's perspective.
+        # Calculate the evaluation drop based on the player who moved.
         if player_color == "White":
-            eval_drop = eval_before_white_pov - eval_after_white_pov
-        else: # Black
-            eval_drop = eval_after_white_pov - eval_before_white_pov
+            eval_drop = eval_before - eval_after
+        else: # Black's turn
+            eval_drop = eval_after - eval_before
         
         # Print the move
         if player_color == "White":
@@ -195,37 +218,47 @@ def analyze_game(db: Database, pgn_path: str, side_to_analyze: str = 'both', out
             board.pop()
             position_fen = board.fen()
             
+            # Check if a mate was missed.
+            mate_missed = eval_before_dict['type'] == 'mate'
+            
             # Set stockfish to the position *before* the blunder to find the best move.
             stockfish.set_fen_position(position_fen)
-            best_move_uci = stockfish.get_best_move()
+            best_move_uci = stockfish.get_best_move() # Use the correct, available method
             best_move_san = board.san(chess.Move.from_uci(best_move_uci))
-            
-            # Get LLM analysis
-            mistake_tag, explanation = get_llm_analysis(position_fen, player_color, move_san, best_move_san)
 
-            print(f"\n*** MISTAKE by {player_color} on move {move_san}! (Tag: {mistake_tag}, Eval drop: {eval_drop:.0f}) ***")
+            # Push the move back to restore the board state
+            board.push(move)
+
+            print(f"\n*** MISTAKE by {player_color} on move {move_san}! (Eval drop: {eval_drop}) ***")
+
+            motif, severity, explanation = get_llm_analysis(
+                position_fen=position_fen,
+                move_san=move_san,
+                best_move_san=best_move_san,
+                cp_loss=eval_drop,
+                mate_missed=mate_missed
+            )
+
             print("\n--- Coach's Corner ---")
-            print(explanation)
-            print("----------------------\n")
-            
-            # Add the analysis as a comment to the game node
-            node.comment = explanation
+            print(f"{severity} ({motif}): {explanation}")
+            print("----------------------")
+
+            # Add the analysis as a comment to the PGN node
+            node.comment = f"[COACH] {severity} ({motif}): {explanation}"
 
             # Save the blunder to the database
             db.save_blunder(
-                    pgn_path=pgn_path,
-                    move_number=board.fullmove_number,
-                    player_color=player_color,
-                    move_san=move_san,
-                    position_fen=position_fen,
-                    eval_drop=int(eval_drop),
-                    best_move_san=best_move_san,
-                    coach_comment=explanation,
-                    mistake_tag=mistake_tag
-                )
-            
-            # Push the move back on to restore the board state for the next iteration
-            board.push(move)
+                pgn_path=pgn_path,
+                move_number=move_number,
+                player_color=player_color,
+                move_san=move_san,
+                position_fen=position_fen,
+                eval_drop=eval_drop,
+                best_move_san=best_move_san,
+                coach_comment=explanation,
+                motif=motif,
+                severity=severity
+            )
 
     print("\nAnalysis complete.")
 
