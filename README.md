@@ -109,10 +109,29 @@ Create `.env` from `.env.sample` and fill in the keys you need.
 
 ---
 
+## Usage
+
+To analyze a game, run the `coach.py` script from your terminal. You can specify a PGN file and optionally the side to analyze.
+
+```bash
+# Analyze both sides (default)
+python coach.py games/sample_game.pgn
+
+# Analyze only White's moves
+python coach.py games/sample_game.pgn --side white
+
+# Analyze only Black's moves
+python coach.py games/sample_game.pgn --side black
+```
+
+---
+
 ## Contributing
 
 Contributions are welcome!  
 Open an issue or start a discussion to pitch features or bug fixes.
+
+To run the test suite:
 
 ```bash
 # lint & tests

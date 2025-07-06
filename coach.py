@@ -17,7 +17,7 @@ BLUNDER_THRESHOLD = 150
 
 # The name of the Ollama model to use for analysis
 # OLLAMA_MODEL = 'llama3.2:1b'
-OLLAMA_MODEL = 'deepseek-r1:1.5b'
+OLLAMA_MODEL = 'gemma3:1b'
 
 def get_stockfish_evaluation(stockfish: Stockfish, board: chess.Board) -> int:
     """
@@ -80,7 +80,7 @@ def get_llm_analysis(position_fen: str, player_color: str, mistake: str, best_mo
     except Exception as e:
         return f"Error getting analysis from Ollama: {e}"
 
-def analyze_game(pgn_path: str):
+def analyze_game(pgn_path: str, side_to_analyze: str = 'both'):
     """
     Analyzes a chess game from a PGN file, identifies blunders,
     and uses an LLM to provide coaching advice.
@@ -120,25 +120,25 @@ def analyze_game(pgn_path: str):
         
         # Get the evaluation BEFORE the move. Stockfish is always from White's perspective.
         stockfish.set_fen_position(board.fen())
-        evaluation_from_white_perspective = get_stockfish_evaluation(stockfish, board)
+        eval_before_white_pov = get_stockfish_evaluation(stockfish, board)
         
-        # We need the score from the current player's perspective.
-        # If it's Black's turn, a positive score for White is a negative score for Black.
-        score_before_move = evaluation_from_white_perspective if player_color == "White" else -evaluation_from_white_perspective
-
         # Make the move and get the move in Standard Algebraic Notation (SAN)
         move_san = board.san(move)
         board.push(move)
 
-        # Get the evaluation after the move, from the opponent's perspective.
+        # Get the evaluation AFTER the move. Stockfish is always from White's perspective.
         stockfish.set_fen_position(board.fen())
-        score_after_move_for_opponent = get_stockfish_evaluation(stockfish, board)
+        eval_after_white_pov = get_stockfish_evaluation(stockfish, board)
 
-        # The player's new score is the negative of their opponent's score.
-        score_after_move_for_player = -score_after_move_for_opponent
-
-        # The drop in evaluation is the difference between the score before and after.
-        eval_drop = score_before_move - score_after_move_for_player
+        # Calculate the evaluation drop from the current player's perspective.
+        if player_color == "White":
+            # For White, a drop is (score before) - (score after).
+            eval_drop = eval_before_white_pov - eval_after_white_pov
+        else: # Black
+            # For Black, a drop is also (score before) - (score after).
+            # Black's score is the negative of White's.
+            # Drop = (-eval_before_white_pov) - (-eval_after_white_pov)
+            eval_drop = eval_after_white_pov - eval_before_white_pov
         
         # Print the move
         if player_color == "White":
@@ -151,7 +151,8 @@ def analyze_game(pgn_path: str):
             continue
             
         # Check for a blunder
-        if eval_drop > BLUNDER_THRESHOLD:
+        # Check for a blunder, but only for the specified side.
+        if (side_to_analyze == 'both' or side_to_analyze.lower() == player_color.lower()) and eval_drop > BLUNDER_THRESHOLD:
             print(f"\n*** MISTAKE by {player_color} on move {move_san}! (Eval drop: {eval_drop:.0f}) ***")
             
             # We need the FEN *before* the bad move was made.
@@ -179,9 +180,10 @@ def main():
     """Main function to run the CLI."""
     parser = argparse.ArgumentParser(description="A simple CLI chess coach that analyzes a PGN file.")
     parser.add_argument("pgn_file", help="The path to the PGN file to analyze.")
+    parser.add_argument("--side", type=str, default="both", choices=["white", "black", "both"], help="The side to analyze (white, black, or both). Default is both.")
     args = parser.parse_args()
     
-    analyze_game(args.pgn_file)
+    analyze_game(args.pgn_file, args.side)
 
 if __name__ == "__main__":
     main()
