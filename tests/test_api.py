@@ -46,9 +46,13 @@ def client():
     os.remove(db_path)
 
 
-@patch('coach.ollama.chat')
-@patch('coach.Stockfish')
-def test_analyze_pgn_file_api(mock_stockfish_class, mock_ollama_chat, client):
+@patch('os.getenv')
+@patch('core.analysis.ollama.chat')
+@patch('core.analysis.Stockfish')
+@patch('api.main.GameProcessor')
+@patch('api.main.StockfishAnalyzer')
+@patch('api.main.LLMCoach')
+def test_analyze_pgn_file_api(mock_llm_coach, mock_stockfish_analyzer, mock_game_processor, mock_stockfish_class, mock_ollama_chat, mock_getenv, client):
     """
     Tests the /analyze/ endpoint with a sample PGN file, using dependency override for the DB.
     The 'override_get_db' fixture handles the DB setup and teardown.
@@ -58,6 +62,54 @@ def test_analyze_pgn_file_api(mock_stockfish_class, mock_ollama_chat, client):
     mock_motif = "Hanging Piece"
     mock_severity = "Blunder"
     mock_explanation = "This is a mock explanation from the API test."
+    
+    # Mock environment variables
+    def getenv_mock(key, default=None):
+        if key == "STOCKFISH_PATH":
+            return "mock_stockfish"
+        elif key == "OLLAMA_MODEL":
+            return "mock_model"
+        return default
+    
+    mock_getenv.side_effect = getenv_mock
+    
+    # Mock the analyzer classes to prevent real initialization
+    mock_stockfish_instance = mock_stockfish_analyzer.return_value
+    mock_llm_coach_instance = mock_llm_coach.return_value
+    
+    # Mock GameProcessor to prevent real initialization and control test flow
+    mock_processor_instance = mock_game_processor.return_value
+    
+    # Set up the processor.analyze_game method to simulate successful analysis
+    mock_processor_instance.analyze_game.return_value = None  # Method doesn't return anything
+    
+    # Create mock database results that will be returned by the endpoint
+    mock_blunder_result = {
+        "player_color": "Black",
+        "move_san": "Ngxe5",
+        "motif": mock_motif,
+        "severity": mock_severity,
+        "coach_comment": mock_explanation,
+        "eval_drop": 550  # 600 - 50 = 550
+    }
+    
+    # Patch the database.get_blunders_by_pgn_path method in the endpoint's dependency
+    # This will be called by the API endpoint and should return our mock data
+    class MockDB:
+        def get_blunders_by_pgn_path(self, pgn_path):
+            return [mock_blunder_result]
+        
+        def init_db(self):
+            pass
+            
+        def connect(self):
+            pass
+            
+        def close(self):
+            pass
+    
+    # Override the test client's db dependency
+    app.dependency_overrides[get_db] = lambda: MockDB()
     mock_ollama_chat.return_value = {
         'message': {
             'content': f'{{"motif": "{mock_motif}", "severity": "{mock_severity}", "explanation": "{mock_explanation}"}}'

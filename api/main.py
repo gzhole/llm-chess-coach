@@ -1,24 +1,33 @@
 # api/main.py
+"""
+FastAPI web API for chess game analysis.
+
+This module provides HTTP endpoints for analyzing chess games using the
+chess coach system and returning results as JSON responses.
+"""
 
 import sys
 import os
-from fastapi import FastAPI, UploadFile, File, Depends
+import tempfile
+from fastapi import FastAPI, UploadFile, File, Depends, HTTPException
 from fastapi.responses import JSONResponse
+from shutil import copyfileobj
+from typing import List, Dict, Any
 
-# Add the project root to the Python path to allow importing from 'coach'
-# This is necessary because the API is in a subdirectory.
+# Add the project root to the Python path to allow importing from parent
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from coach import analyze_pgn_string
 from database import Database
+from core.analysis import StockfishAnalyzer, LLMCoach, GameProcessor
 
-app = FastAPI(
-    title="Chess Coach API",
-    description="An API to analyze PGN chess files for blunders and get coaching advice.",
-    version="1.0.0"
-)
+app = FastAPI(title="Chess Coach API", description="API for analyzing chess games and providing coaching feedback")
 
-# --- Dependency Injection for Database ---
+# --- Constants ---
+STOCKFISH_PATH = os.getenv("STOCKFISH_PATH", "stockfish")
+BLUNDER_THRESHOLD = 150  # Minimum centipawn loss to be considered a significant mistake
+OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "gemma3:1b")  # The Ollama model to use for analysis
+SYSTEM_PROMPT_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "prompts", "system_prompt.txt")
+
 def get_db():
     """
     FastAPI dependency that provides a database connection.
@@ -26,21 +35,19 @@ def get_db():
     """
     db = Database()
     try:
-        db.connect()
-        db.init_db() # Ensure tables are created
+        db.init_db()  # Ensure the schema exists
         yield db
     finally:
         db.close()
 
-@app.get("/", tags=["General"])
+@app.get("/")
 def read_root():
     """
     Root endpoint that returns a welcome message.
     """
-    return {"message": "Welcome to the Chess Coach API!"}
+    return {"message": "Welcome to the Chess Coach API! Use /analyze/ to upload a PGN file for analysis."}
 
-
-@app.post("/analyze/", tags=["Analysis"])
+@app.post("/analyze/", response_model=Dict[str, List[Dict[str, Any]]])
 async def analyze_pgn_file(
     pgn_file: UploadFile = File(..., description="A PGN file to be analyzed."),
     db: Database = Depends(get_db)
@@ -48,16 +55,33 @@ async def analyze_pgn_file(
     """
     Analyzes a PGN file and returns a list of detected blunders with coaching comments.
     """
+    # Create a temporary file to store the uploaded PGN
+    with tempfile.NamedTemporaryFile(delete=False, suffix='.pgn', mode='wb') as tmp_file:
+        # Copy the uploaded file to the temp file
+        copyfileobj(pgn_file.file, tmp_file)
+        tmp_path = tmp_file.name
+    
     try:
-        pgn_content_bytes = await pgn_file.read()
-        pgn_content = pgn_content_bytes.decode('utf-8')
+        # Initialize components
+        analyzer = StockfishAnalyzer(stockfish_path=STOCKFISH_PATH)
+        coach = LLMCoach(model=OLLAMA_MODEL, system_prompt_path=SYSTEM_PROMPT_PATH)
+        processor = GameProcessor(analyzer, coach, db, BLUNDER_THRESHOLD)
         
-        if not pgn_content:
-            return JSONResponse(status_code=400, content={"error": "The uploaded PGN file is empty."})
-
-        analysis_results = analyze_pgn_string(db, pgn_content)
+        # Analyze the game
+        processor.analyze_game(tmp_path, side_to_analyze='both')
         
-        return JSONResponse(status_code=200, content={"analysis": analysis_results})
-
+        # Get the analysis results from the database
+        analysis_results = db.get_blunders_by_pgn_path(tmp_path)
+        
+        return {"analysis": analysis_results}
+    
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
-        return JSONResponse(status_code=500, content={"error": f"An unexpected error occurred: {str(e)}"})
+        raise HTTPException(status_code=500, detail=f"Analysis error: {str(e)}")
+    finally:
+        # Clean up the temporary file
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
+        if 'analyzer' in locals():
+            analyzer.close()
